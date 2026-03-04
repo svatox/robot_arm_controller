@@ -31,9 +31,6 @@
 /** 发送缓冲区 */
 static uint8_t tx_buffer[EMM_UART_BUFSIZE];
 
-/** 接收缓冲区 */
-static uint8_t rx_buffer[EMM_UART_BUFSIZE];
-
 
 /* ==================== 命令构建函数 ==================== */
 
