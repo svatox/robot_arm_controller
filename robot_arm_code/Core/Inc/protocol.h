@@ -91,6 +91,7 @@ extern "C" {
  */
 #define FUNC_READ_SINGLE_STATUS 0x41    /**< 读单关节状态 - 读取指定关节详细状态 */
 #define FUNC_READ_FULL_STATUS    0x42    /**< 读全量状态 - 读取所有关节+夹爪+系统状态 */
+#define FUNC_READ_JOINT_ANGLE   0x43    /**< 读关节角度 - 读取指定关节当前角度 */
 #define FUNC_READ_GRIPPER_STATUS 0x47   /**< 读夹爪状态 - 读取夹爪当前状态 */
 
 /**

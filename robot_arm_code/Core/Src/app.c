@@ -240,6 +240,10 @@ static void App_ProcessFrame(const ProtocolFrame *frame)
             App_HandleReadFullStatus(frame, response, &resp_len);
             break;
 
+        case FUNC_READ_JOINT_ANGLE:
+            App_HandleReadJointAngle(frame, response, &resp_len);
+            break;
+
         case FUNC_READ_GRIPPER_STATUS:
             App_HandleReadGripperStatus(frame, response, &resp_len);
             break;
@@ -523,28 +527,61 @@ void App_HandleResetPositions(const ProtocolFrame *frame, uint8_t *response, uin
 /**
  * @brief 处理关节微动命令
  * 功能码: 0x20
- * 数据: 方向(1B) + 步长(float) + 速度(uint16)
+ * 数据: 模式(1B) + 方向(1B) + 步长(4B) + 速度(2B)
+ *
+ * 模式说明：
+ * - 模式0（角度模式）: 步长为角度(float)，需要零位已设置
+ * - 模式1（脉冲模式）: 步长为脉冲数(int32)，不涉及零位
+ *
+ * 角度模式数据格式: [模式=0][方向][步长角度(float)][速度(uint16)]
+ * 脉冲模式数据格式: [模式=1][方向][步长脉冲(int32)][速度(uint16)][加速度(1B)]
  */
 void App_HandleJointJog(const ProtocolFrame *frame, uint8_t *response, uint8_t *resp_len)
 {
     uint8_t status = STATUS_SUCCESS;
 
     // 检查数据长度和地址
-    if (frame->data_length < 7 || !Protocol_IsValidJointAddress(frame->address)) {
+    if (frame->data_length < 6 || !Protocol_IsValidJointAddress(frame->address)) {
         status = STATUS_PARAM_ERROR;
     } else {
-        // 解析参数
-        uint8_t direction = frame->data[0];                        // 方向
-        float step = Protocol_ReadFloat(&frame->data[1]);          // 步长
-        uint16_t speed_raw = Protocol_ReadU16(&frame->data[5]);    // 速度原始值
-        float speed = (float)speed_raw / 10.0f;                   // 转换为float
+        uint8_t mode = frame->data[0];  // 模式: 0=角度, 1=脉冲
 
-        // 执行微动
-        if (!Motion_JogJoint(frame->address, direction, step, speed)) {
-            status = STATUS_EXEC_FAILED;
+        if (mode == 0) {
+            // 角度模式
+            if (frame->data_length < 7) {
+                status = STATUS_PARAM_ERROR;
+            } else {
+                uint8_t direction = frame->data[1];                        // 方向
+                float step = Protocol_ReadFloat(&frame->data[2]);        // 步长(角度)
+                uint16_t speed_raw = Protocol_ReadU16(&frame->data[6]);  // 速度原始值
+                float speed = (float)speed_raw / 10.0f;                 // 转换为float
+
+                // 执行角度模式微动
+                if (!Motion_JogJoint(frame->address, direction, step, speed)) {
+                    status = STATUS_EXEC_FAILED;
+                } else {
+                    g_system_state = SYS_STATE_MOVING;
+                }
+            }
+        } else if (mode == 1) {
+            // 脉冲模式
+            if (frame->data_length < 8) {
+                status = STATUS_PARAM_ERROR;
+            } else {
+                uint8_t direction = frame->data[1];                        // 方向
+                int32_t step_pulses = Protocol_ReadI32(&frame->data[2]); // 步长(脉冲)
+                uint16_t speed_rpm = Protocol_ReadU16(&frame->data[6]);   // 速度(RPM)
+                uint8_t acc = frame->data[8];                            // 加速度
+
+                // 执行脉冲模式微动
+                if (!Motion_JogJointByPulse(frame->address, direction, step_pulses, speed_rpm, acc)) {
+                    status = STATUS_EXEC_FAILED;
+                } else {
+                    g_system_state = SYS_STATE_MOVING;
+                }
+            }
         } else {
-            // 设置系统状态为运动中
-            g_system_state = SYS_STATE_MOVING;
+            status = STATUS_PARAM_ERROR;
         }
     }
 
@@ -742,6 +779,41 @@ void App_HandleReadFullStatus(const ProtocolFrame *frame, uint8_t *response, uin
     data[3] = Storage_IsValid() ? 0x00 : 0x01;
 
     Frame_BuildResponse(ADDR_SYSTEM, FUNC_READ_FULL_STATUS, STATUS_SUCCESS, data, 4, response, resp_len);
+}
+
+/**
+ * @brief 处理读关节角度命令
+ * 功能码: 0x43
+ * 返回: float32 关节当前角度
+ */
+void App_HandleReadJointAngle(const ProtocolFrame *frame, uint8_t *response, uint8_t *resp_len)
+{
+    uint8_t status = STATUS_SUCCESS;
+    uint8_t data[4];
+
+    if (!Protocol_IsValidJointAddress(frame->address)) {
+        status = STATUS_PARAM_ERROR;
+    } else {
+        uint8_t joint_id = frame->address;
+        EmmMotorStatus motor_status;
+
+        // 读取电机状态
+        if (EmmV5_GetStatus(joint_id, &motor_status)) {
+            // 更新关节状态
+            Motion_UpdateJointStatus(joint_id, &motor_status);
+
+            // 获取关节当前角度
+            JointConfig *joint = &g_motion.joints[joint_id - 1];
+            Protocol_WriteFloat(joint->current_angle, data);
+
+            Frame_BuildResponse(frame->address, FUNC_READ_JOINT_ANGLE, status, data, 4, response, resp_len);
+            return;
+        } else {
+            status = STATUS_EXEC_FAILED;
+        }
+    }
+
+    Frame_BuildResponse(frame->address, FUNC_READ_JOINT_ANGLE, status, NULL, 0, response, resp_len);
 }
 
 /**

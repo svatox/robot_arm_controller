@@ -226,6 +226,16 @@ void App_HandleReadSingleStatus(const ProtocolFrame *frame, uint8_t *response, u
 void App_HandleReadFullStatus(const ProtocolFrame *frame, uint8_t *response, uint8_t *resp_len);
 
 /**
+ * @brief 处理读关节角度命令
+ * @param frame 协议帧指针
+ * @param response 响应数据缓冲区
+ * @param resp_len 响应数据长度
+ *
+ * @note 功能码0x43，返回4字节（float32 关节当前角度）
+ */
+void App_HandleReadJointAngle(const ProtocolFrame *frame, uint8_t *response, uint8_t *resp_len);
+
+/**
  * @brief 处理读夹爪状态命令
  * @param frame 协议帧指针
  * @param response 响应数据缓冲区

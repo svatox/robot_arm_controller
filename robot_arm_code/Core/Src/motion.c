@@ -218,6 +218,12 @@ float Motion_MotorSpeedToJointSpeed(uint16_t motor_speed_rpm, float gear_ratio)
 
 /**
  * @brief 设置关节减速比
+ * @param joint_id 关节ID (1-6)
+ * @param ratio 减速比 (0.1~100.0)
+ * @param save_to_flash 是否保存到Flash
+ * @return true 成功
+ *
+ * @note 默认不保存到Flash，需要调用FUNC_SAVE_CONFIG或设置save_to_flash为true
  */
 bool Motion_SetGearRatio(uint8_t joint_id, float ratio)
 {
@@ -233,6 +239,21 @@ bool Motion_SetGearRatio(uint8_t joint_id, float ratio)
 
     // 设置减速比（数组下标从0开始，所以joint_id-1）
     g_motion.joints[joint_id - 1].gear_ratio = ratio;
+    return true;
+}
+
+/**
+ * @brief 设置关节减速比并保存到Flash
+ */
+bool Motion_SetGearRatioAndSave(uint8_t joint_id, float ratio)
+{
+    if (!Motion_SetGearRatio(joint_id, ratio)) {
+        return false;
+    }
+
+    // 保存到Flash
+    Storage_SaveGearRatio(joint_id, ratio);
+    Storage_SaveAllConfig();
     return true;
 }
 
@@ -413,14 +434,18 @@ bool Motion_CheckPositionLimit(uint8_t joint_id, int32_t target_pulse)
 /* ==================== 运动控制 ==================== */
 
 /**
- * @brief 关节微动
+ * @brief 关节微动（基于角度）
  *
- * 让关节向指定方向微动一个步长
+ * 让关节向指定方向微动一个步长（基于角度）
+ * 此模式需要零位已设置，否则无法正常工作
  *
  * @param joint_id 关节ID (1-6)
  * @param direction 方向 (0=正向, 1=反向)
  * @param step_deg 微动步长（度）
  * @param speed_deg 运动速度（度/秒）
+ * @return true 成功
+ *
+ * @note 需要零位已设置，否则返回失败
  */
 bool Motion_JogJoint(uint8_t joint_id, uint8_t direction, float step_deg, float speed_deg)
 {
@@ -434,6 +459,11 @@ bool Motion_JogJoint(uint8_t joint_id, uint8_t direction, float step_deg, float 
 
     // 获取关节配置
     JointConfig *joint = &g_motion.joints[joint_id - 1];
+
+    // 检查零位是否已设置
+    if (joint->zero_set_flag == 0) {
+        return false;  // 零位未设置，无法使用角度模式
+    }
 
     /* 计算目标角度
      * direction=0: 正向，target = current + step
@@ -462,6 +492,43 @@ bool Motion_JogJoint(uint8_t joint_id, uint8_t direction, float step_deg, float 
     if (EmmV5_MoveToPosition(joint_id, target_pulse, motor_speed, 50, 0)) {
         // 设置目标角度
         joint->target_angle = target_angle;
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief 关节微动（基于脉冲，不涉及零位）
+ *
+ * 使用相对当前位置的模式进行微动，不涉及零位
+ * 适用于设置零位和极限位置时的微调
+ *
+ * @param joint_id 关节ID (1-6)
+ * @param direction 方向 (0=正向, 1=反向)
+ * @param step_pulses 微动脉冲数
+ * @param speed_rpm 电机速度（RPM）
+ * @param acc 加速度 (0-255)
+ * @return true 成功
+ *
+ * @note 此模式不检查零位和极限位置，适用于机械调校
+ */
+bool Motion_JogJointByPulse(uint8_t joint_id, uint8_t direction, int32_t step_pulses,
+                              uint16_t speed_rpm, uint8_t acc)
+{
+    // 参数验证
+    if (joint_id < JOINT_ID_MIN || joint_id > JOINT_ID_MAX) {
+        return false;
+    }
+    if (step_pulses == 0) {
+        return false;
+    }
+
+    // 方向处理
+    int32_t relative_pulses = (direction == 0) ? step_pulses : -step_pulses;
+
+    /* 使用EmmV5_MoveRelativeCurrent - 相对当前实时位置运动（模式2）
+     * 这种模式不涉及零位，直接相对于电机当前位置运动 */
+    if (EmmV5_MoveRelativeCurrent(joint_id, relative_pulses, speed_rpm, acc, 0)) {
         return true;
     }
     return false;

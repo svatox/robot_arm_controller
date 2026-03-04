@@ -258,8 +258,20 @@ float Motion_MotorSpeedToJointSpeed(uint16_t motor_speed_rpm, float gear_ratio);
  * @param ratio 减速比值 (0.1-100.0)
  * @return true 设置成功
  * @return false 参数无效或关节ID错误
+ *
+ * @note 此函数仅设置内存中的值，不保存到Flash
+ *       如需保存到Flash，请使用Motion_SetGearRatioAndSave
  */
 bool Motion_SetGearRatio(uint8_t joint_id, float ratio);
+
+/**
+ * @brief 设置关节减速比并保存到Flash
+ * @param joint_id 关节ID (1-6)
+ * @param ratio 减速比值 (0.1-100.0)
+ * @return true 设置成功
+ * @return false 参数无效或关节ID错误
+ */
+bool Motion_SetGearRatioAndSave(uint8_t joint_id, float ratio);
 
 /**
  * @brief 获取关节减速比
@@ -375,11 +387,28 @@ bool Motion_CheckPositionLimit(uint8_t joint_id, int32_t target_pulse);
  * @param step_deg 微动步长（度）
  * @param speed_deg 运动速度（度/秒）
  * @return true 发送命令成功
- * @return false 参数无效
+ * @return false 参数无效或零位未设置
  *
  * @note 发送微动命令后，关节会移动指定步长
+ *       此模式需要零位已设置，否则返回失败
  */
 bool Motion_JogJoint(uint8_t joint_id, uint8_t direction, float step_deg, float speed_deg);
+
+/**
+ * @brief 关节微动（基于脉冲，不涉及零位）
+ * @param joint_id 关节ID (1-6)
+ * @param direction 方向 (0=正向, 1=反向)
+ * @param step_pulses 微动脉冲数
+ * @param speed_rpm 电机速度（RPM）
+ * @param acc 加速度 (0-255)
+ * @return true 发送命令成功
+ * @return false 参数无效
+ *
+ * @note 使用相对当前位置的模式进行微动，不涉及零位
+ *       适用于设置零位和极限位置时的微调
+ */
+bool Motion_JogJointByPulse(uint8_t joint_id, uint8_t direction, int32_t step_pulses,
+                             uint16_t speed_rpm, uint8_t acc);
 
 /**
  * @brief 移动关节到指定角度
