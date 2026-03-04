@@ -1,0 +1,39 @@
+# Git
+.git/
+.gitignore
+
+# Claude
+.claude/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Build outputs
+robot_arm_code/Debug/
+robot_arm_code/Release/
+robot_arm_code/.mx/
+robot_arm_code/.settings/
+*.ioc.backup
+
+# Documents to ignore
+motor_driver/
+motor_desc/
+ARCHITECTURE.md
+CLAUDE.md
+PROJECT_OVERVIEW.md
+*.pdf
+HOST_APPLICATION.md
+FIRMWARE_ARCHITECTURE.md
+PROTOCOL.md
