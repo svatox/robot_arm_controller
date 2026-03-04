@@ -186,12 +186,18 @@ class RobotArm:
 
     # ==================== 运动控制 ====================
 
+    class JogMode:
+        """关节微动模式"""
+        ANGLE = 0  # 角度模式
+        PULSE = 1  # 脉冲模式
+
     def jog(
         self,
         joint: int,
         direction: int,
         step: float,
-        speed: float
+        speed: float,
+        mode: int = 0
     ) -> None:
         """
         关节微动
@@ -199,8 +205,9 @@ class RobotArm:
         Args:
             joint: 关节编号 (1-6)
             direction: 方向 (0=正向, 1=反向)
-            step: 步长 (0.01-5.0度)
-            speed: 速度 (0.1-10.0度/秒)
+            step: 步长 (角度模式: 0.01-5.0度, 脉冲模式: 脉冲数)
+            speed: 速度 (角度模式: 0.1-10.0度/秒, 脉冲模式: 电机RPM)
+            mode: 模式 (0=角度模式, 1=脉冲模式)
 
         Raises:
             ParameterError: 参数错误
@@ -209,10 +216,48 @@ class RobotArm:
         if not Address.is_valid_joint(joint):
             raise ValueError(f"无效的关节编号: {joint}")
 
-        # 速度需要乘以10转换为uint16
-        speed_raw = int(speed * 10)
+        if mode == self.JogMode.ANGLE:
+            # 角度模式：mode(1B) + direction(1B) + step(4B) + speed(2B)
+            speed_raw = int(speed * 10)
+            data = bytes([mode, direction]) + self.protocol.write_float32(step) + self.protocol.write_uint16(speed_raw)
+        else:
+            # 脉冲模式：mode(1B) + direction(1B) + step(4B) + speed(2B) + acc(1B)
+            speed_raw = int(speed)
+            acc = 50  # 默认加速度
+            data = bytes([mode, direction]) + self.protocol.write_int32(int(step)) + self.protocol.write_uint16(speed_raw) + bytes([acc])
 
-        data = bytes([direction]) + self.protocol.write_float32(step) + self.protocol.write_uint16(speed_raw)
+        status, _ = self.commander.send_command(joint, FunctionCode.JOINT_JOG, data)
+        raise_from_status(status)
+
+    def jog_by_pulse(
+        self,
+        joint: int,
+        direction: int,
+        pulses: int,
+        speed_rpm: int,
+        acc: int = 50
+    ) -> None:
+        """
+        脉冲模式关节微动
+
+        不涉及零位，适用于设置零位和极限位置时的微调。
+
+        Args:
+            joint: 关节编号 (1-6)
+            direction: 方向 (0=正向, 1=反向)
+            pulses: 脉冲数 (1-100000)
+            speed_rpm: 电机转速 (1-3000 RPM)
+            acc: 加速度 (0-255)
+
+        Raises:
+            ParameterError: 参数错误
+            ExecutionError: 执行失败
+        """
+        if not Address.is_valid_joint(joint):
+            raise ValueError(f"无效的关节编号: {joint}")
+
+        # 脉冲模式：mode(1B) + direction(1B) + step(4B) + speed(2B) + acc(1B)
+        data = bytes([1, direction]) + self.protocol.write_int32(pulses) + self.protocol.write_uint16(speed_rpm) + bytes([acc])
         status, _ = self.commander.send_command(joint, FunctionCode.JOINT_JOG, data)
         raise_from_status(status)
 
@@ -388,3 +433,56 @@ class RobotArm:
             'uart_ok': data[2] == 0,
             'flash_ok': data[3] == 0
         }
+
+    def get_joint_angle(self, joint: int) -> float:
+        """
+        读取关节当前角度
+
+        Args:
+            joint: 关节编号 (1-6)
+
+        Returns:
+            float: 关节当前角度 (度)
+
+        Raises:
+            ParameterError: 参数错误
+            ExecutionError: 执行失败
+        """
+        if not Address.is_valid_joint(joint):
+            raise ValueError(f"无效的关节编号: {joint}")
+
+        status, data = self.commander.send_command(
+            joint, FunctionCode.READ_JOINT_ANGLE
+        )
+        raise_from_status(status)
+
+        return self.protocol.read_float32(data, 0)
+
+    # ==================== 电机透传 ====================
+
+    def motor_passthrough(self, joint: int, motor_data: bytes) -> bytes:
+        """
+        电机透传
+
+        直接转发数据到Emm_V5.0电机驱动器，用于调试和高级控制。
+
+        Args:
+            joint: 关节编号 (1-6)
+            motor_data: 电机命令数据（不含结束符0x6B）
+
+        Returns:
+            bytes: 电机响应数据
+
+        Raises:
+            ParameterError: 参数错误
+            ExecutionError: 执行失败
+        """
+        if not Address.is_valid_joint(joint):
+            raise ValueError(f"无效的关节编号: {joint}")
+
+        status, data = self.commander.send_command(
+            joint, FunctionCode.MOTOR_PASSTHROUGH_BASE, motor_data
+        )
+        raise_from_status(status)
+
+        return data

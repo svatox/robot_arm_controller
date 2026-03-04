@@ -48,7 +48,11 @@ class FunctionCode:
     # 状态读取命令 (0x41-0x47)
     READ_SINGLE_STATUS = 0x41  # 读单关节状态
     READ_FULL_STATUS = 0x42     # 读全量状态
+    READ_JOINT_ANGLE = 0x43     # 读关节角度
     READ_GRIPPER_STATUS = 0x47 # 读夹爪状态
+
+    # 电机透传命令 (0xF0-0xFF)
+    MOTOR_PASSTHROUGH_BASE = 0xF0  # 电机透传起始码
 
 
 # ==================== 状态码 ====================
