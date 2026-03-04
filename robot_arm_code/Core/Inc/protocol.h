@@ -64,6 +64,23 @@ extern "C" {
 #define ADDR_SYSTEM         0x08    /**< 系统控制器(STM32) */
 
 
+/* ==================== 校验方式配置 ==================== */
+
+/**
+ * @brief 校验方式选择
+ * @note 修改此宏来选择校验方式
+ *       0 = CRC8校验 (使用多项式0x31)
+ *       1 = 固定校验字节
+ */
+#define CHECKSUM_METHOD         1
+
+/**
+ * @brief 固定校验字节值
+ * @note 当CHECKSUM_METHOD设置为1时使用此字节作为校验
+ */
+#define FIXED_CHECKSUM_BYTE     0x6B
+
+
 /* ==================== 功能码定义 ==================== */
 
 /**
@@ -92,6 +109,7 @@ extern "C" {
 #define FUNC_READ_SINGLE_STATUS 0x41    /**< 读单关节状态 - 读取指定关节详细状态 */
 #define FUNC_READ_FULL_STATUS    0x42    /**< 读全量状态 - 读取所有关节+夹爪+系统状态 */
 #define FUNC_READ_JOINT_ANGLE   0x43    /**< 读关节角度 - 读取指定关节当前角度 */
+#define FUNC_READ_PROTECTION    0x44    /**< 读位置保护状态 - 读取位置保护开关状态 */
 #define FUNC_READ_GRIPPER_STATUS 0x47   /**< 读夹爪状态 - 读取夹爪当前状态 */
 
 /**

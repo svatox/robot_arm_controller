@@ -123,14 +123,26 @@ bool Flash_WriteHalfWord(uint32_t address, uint16_t data)
 /**
  * @brief 写入8位数据到Flash
  * @note STM32F1 Flash编程最小单位为16位，因此写入8位数据时使用16位写入
- *       高8位填0xFF，低8位为实际数据
+ *       对于奇数地址，会与前一个字节合并为16位写入
  */
 bool Flash_WriteByte(uint32_t address, uint8_t data)
 {
-    // STM32F1 Flash最小编程单位为16位，使用半字写入
-    // 高8位填0xFF，低8位为实际数据
-    uint16_t halfword = (0xFF << 8) | data;
-    HAL_StatusTypeDef status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, address, halfword);
+    // 向下对齐到偶数地址
+    uint32_t aligned_addr = address & 0xFFFFFFFE;
+
+    // 读取现有的16位数据
+    uint16_t halfword = *(__IO uint16_t*)aligned_addr;
+
+    // 根据原始地址是奇数还是偶数，决定修改高8位还是低8位
+    if (address & 0x01) {
+        // 奇数地址：修改高8位
+        halfword = (data << 8) | (halfword & 0x00FF);
+    } else {
+        // 偶数地址：修改低8位
+        halfword = (halfword & 0xFF00) | data;
+    }
+
+    HAL_StatusTypeDef status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, aligned_addr, halfword);
     return (status == HAL_OK);
 }
 

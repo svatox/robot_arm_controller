@@ -49,6 +49,7 @@ class FunctionCode:
     READ_SINGLE_STATUS = 0x41  # 读单关节状态
     READ_FULL_STATUS = 0x42     # 读全量状态
     READ_JOINT_ANGLE = 0x43     # 读关节角度
+    READ_PROTECTION = 0x44      # 读位置保护状态
     READ_GRIPPER_STATUS = 0x47 # 读夹爪状态
 
     # 电机透传命令 (0xF0-0xFF)

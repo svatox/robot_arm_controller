@@ -86,9 +86,9 @@ void App_Init(void)
  */
 static void App_InitUSART2_DMA(void)
 {
-    // 启动DMA接收
-    // DMA会自动将USART2接收的数据放入缓冲区
-    HAL_UART_Receive_DMA(&huart2, usart2_rx_buf, sizeof(usart2_rx_buf));
+    // 启动DMA接收（使用IDLE空闲中断检测接收完成）
+    // HAL_UARTEx_ReceiveToIdle_DMA 会在收到数据或IDLE时触发回调
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart2, usart2_rx_buf, sizeof(usart2_rx_buf));
 
     // 启用IDLE空闲中断
     // 当USART总线空闲（超过1帧时间没有数据）时触发
@@ -158,6 +158,9 @@ void App_ProcessUartData(void)
                 Frame_BuildResponse(0x08, 0x00, STATUS_CRC_ERROR, NULL, 0, resp, &resp_len);
                 App_SendResponse(resp, resp_len);
             }
+
+            // 重置解析器状态，准备解析下一帧
+            FrameParser_Init(&usart2_parser);
         }
     }
 }
@@ -208,6 +211,10 @@ static void App_ProcessFrame(const ProtocolFrame *frame)
 
         case FUNC_SET_PROTECTION:
             App_HandleSetProtection(frame, response, &resp_len);
+            break;
+
+        case FUNC_READ_PROTECTION:
+            App_HandleReadProtection(frame, response, &resp_len);
             break;
 
         case FUNC_RESET_POSITIONS:
@@ -481,6 +488,22 @@ void App_HandleSetProtection(const ProtocolFrame *frame, uint8_t *response, uint
     }
 
     Frame_BuildResponse(ADDR_SYSTEM, FUNC_SET_PROTECTION, status, NULL, 0, response, resp_len);
+}
+
+/**
+ * @brief 处理读取位置保护状态命令
+ * @param frame 协议帧指针
+ * @param response 响应数据缓冲区
+ * @param resp_len 响应数据长度
+ *
+ * @note 返回数据：1字节 - 位置保护开关状态 (0=关闭, 1=开启)
+ */
+void App_HandleReadProtection(const ProtocolFrame *frame, uint8_t *response, uint8_t *resp_len)
+{
+    uint8_t status = STATUS_SUCCESS;
+    uint8_t protection_state = Motion_GetPositionProtection() ? 1 : 0;
+
+    Frame_BuildResponse(ADDR_SYSTEM, FUNC_READ_PROTECTION, status, &protection_state, 1, response, resp_len);
 }
 
 /**
@@ -953,22 +976,20 @@ void App_SetSystemState(SystemState state)
 /**
  * @brief UART空闲中断回调函数
  *
- * 当USART检测到空闲线路时调用（DMA接收完成一帧数据）
+ * UART接收事件回调函数（HAL_UARTEx_RxEventCallback）
+ * 当DMA接收到数据或检测到IDLE空闲线路时调用
  * 将DMA缓冲区中的数据复制到环形缓冲区
  */
-void HAL_UART_IdleCpltCallback(UART_HandleTypeDef *huart)
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
     if (huart == &huart2) {
-        // 计算本次接收到的数据长度
-        // 总长度 - 剩余长度 = 已接收长度
-        uint16_t rx_len = sizeof(usart2_rx_buf) - __HAL_DMA_GET_COUNTER(huart->hdmarx);
-
         // 将接收到的数据复制到环形缓冲区
-        for (uint16_t i = 0; i < rx_len; i++) {
+        // Size 表示本次接收到的数据字节数
+        for (uint16_t i = 0; i < Size; i++) {
             RingBuffer_Write(&usart2_rb, usart2_rx_buf[i]);
         }
 
-        // 重新启动DMA接收
-        HAL_UART_Receive_DMA(&huart2, usart2_rx_buf, sizeof(usart2_rx_buf));
+        // 重新启动DMA接收（继续等待下一帧数据）
+        HAL_UARTEx_ReceiveToIdle_DMA(&huart2, usart2_rx_buf, sizeof(usart2_rx_buf));
     }
 }

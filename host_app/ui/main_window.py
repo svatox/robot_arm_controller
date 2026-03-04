@@ -3,8 +3,9 @@
 """
 
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                               QLabel, QPushButton, QComboBox, QStatusBar,
-                               QMenuBar, QMenu, QTabWidget, QGroupBox)
+                               QLabel, QPushButton, QComboBox, QStatusBar,QFrame, 
+                               QMenuBar, QMenu, QTabWidget, QGroupBox, QGridLayout,
+                               QSizePolicy, QSpacerItem)
 from PySide6.QtCore import Signal, Qt, QTimer
 from PySide6.QtGui import QFont, QAction
 import serial.tools.list_ports
@@ -14,6 +15,82 @@ from ui.joint_control import JointControlPanel, MultiJointControlWidget
 from ui.gripper_control import GripperControlWidget, SystemStatusWidget
 from ui.config_panel import ConfigPanelWidget
 from ui.log_panel import LogPanel
+
+
+class AutoRefreshWidget(QFrame):
+    """自动刷新控制面板"""
+
+    # 信号
+    toggled = Signal(bool)  # 开关状态
+    refresh_clicked = Signal()  # 刷新按钮点击
+    interval_changed = Signal(str)  # 刷新间隔改变
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._init_ui()
+
+    def _init_ui(self):
+        # 使用QFrame样式
+        self.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
+
+        layout = QVBoxLayout()
+        layout.setSpacing(8)
+
+        # 标题
+        title = QLabel("自动刷新")
+        title.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+
+    
+        self.chk_auto_refresh = QPushButton("开启定时刷新")
+        self.chk_auto_refresh.setCheckable(True)
+        self.chk_auto_refresh.setFixedHeight(28)
+        self.chk_auto_refresh.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.chk_auto_refresh.setStyleSheet("""
+            QPushButton {
+                background-color: #e0e0e0;
+                padding: 3px 8px;
+                border-radius: 3px;
+            }
+            QPushButton:checked {
+                background-color: #27ae60;
+                color: white;
+            }
+        """)
+        self.chk_auto_refresh.toggled.connect(self.toggled.emit)
+
+        btn_refresh_now = QPushButton("立即刷新")
+        btn_refresh_now.setFixedHeight(28)
+        btn_refresh_now.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btn_refresh_now.clicked.connect(self.refresh_clicked.emit)
+
+        # 间隔选择
+        rate_row = QHBoxLayout()
+        rate_row.setSpacing(5)
+        lbl_rate = QLabel("刷新间隔:")
+        self.combo_refresh_rate = QComboBox()
+        self.combo_refresh_rate.addItems(["100ms", "200ms", "500ms", "1s", "2s"])
+        self.combo_refresh_rate.setCurrentText("500ms")
+        self.combo_refresh_rate.setFixedHeight(25)
+        self.combo_refresh_rate.currentTextChanged.connect(self.interval_changed.emit)
+        rate_row.addWidget(lbl_rate)
+        rate_row.addWidget(self.combo_refresh_rate)
+
+        layout.addWidget(title)
+        layout.addWidget(btn_refresh_now)
+        layout.addWidget(self.chk_auto_refresh)
+        layout.addLayout(rate_row)
+        layout.addStretch()
+
+        self.setLayout(layout)
+
+    def set_interval(self, text: str):
+        """设置刷新间隔"""
+        self.combo_refresh_rate.setCurrentText(text)
+
+    def set_checked(self, checked: bool):
+        """设置开关状态"""
+        self.chk_auto_refresh.setChecked(checked)
 
 
 class MainWindow(QMainWindow):
@@ -33,8 +110,10 @@ class MainWindow(QMainWindow):
     cmd_set_limit_pos = Signal(int)
     cmd_read_limit_pos = Signal(int)
     cmd_set_protection = Signal(bool)
+    cmd_read_protection = Signal()
     cmd_reset_position = Signal()
-    cmd_joint_jog = Signal(int, int, float, float)  # joint, direction, step, speed
+    cmd_joint_jog = Signal(int, int, float, float)  # joint, direction, step, speed (angle mode)
+    cmd_joint_jog_pulse = Signal(int, int, int, int, int)  # joint, direction, pulses, speed_rpm, acc
     cmd_homing = Signal(int, float)  # joint(0=all), speed
     cmd_joint_position = Signal(int, float, float)  # joint, target, speed
     cmd_gripper_pwm = Signal(int, int, int)  # mode, pwm, time
@@ -43,6 +122,11 @@ class MainWindow(QMainWindow):
     cmd_read_full_status = Signal()
     cmd_read_gripper_status = Signal()
     cmd_motor_passthrough = Signal(int, bytes)
+
+    # 定时刷新信号
+    status_refresh_toggled = Signal(bool)  # 开关状态
+    status_refresh_interval_changed = Signal(int)  # 刷新间隔(ms)
+    refresh_requested = Signal()  # 立即刷新请求
 
     # 记录信号
     start_recording = Signal()
@@ -56,8 +140,8 @@ class MainWindow(QMainWindow):
 
     def _init_ui(self):
         self.setWindowTitle("机械臂调试上位机 v1.0")
-        self.setMinimumSize(900, 700)
-        self.resize(1100, 800)
+        self.setMinimumSize(1200, 800)
+        self.resize(1400, 900)
 
         # 中央部件
         central = QWidget()
@@ -87,44 +171,60 @@ class MainWindow(QMainWindow):
             row1_layout.addWidget(widget)
         status_layout.addLayout(row1_layout)
 
-        # 第二行：关节5-6 + 系统状态 + 读取按钮
+        # 第二行：关节5-6 + 系统状态 + 刷新控制（网格布局）
         row2_layout = QHBoxLayout()
+        row2_layout.setSpacing(10)
+
         # 关节5
         self.joint5_widget = JointStatusWidget(5)
         row2_layout.addWidget(self.joint5_widget)
+
         # 关节6
         self.joint6_widget = JointStatusWidget(6)
         row2_layout.addWidget(self.joint6_widget)
-        # 系统状态 + 读取按钮
-        sys_layout = QVBoxLayout()
-        self.system_status = SystemStatusWidget()
-        btn_read_status = QPushButton("读取状态")
-        btn_read_status.clicked.connect(self.cmd_read_full_status.emit)
-        sys_layout.addWidget(self.system_status)
-        sys_layout.addWidget(btn_read_status)
-        row2_layout.addLayout(sys_layout)
 
+        # 系统状态
+        self.system_status = SystemStatusWidget()
+        row2_layout.addWidget(self.system_status)
+        
+        row2_layout.addSpacerItem(QSpacerItem(20,20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding))
+
+        # 刷新控制（使用自定义Widget）
+        self.auto_refresh_widget = AutoRefreshWidget()
+        self.auto_refresh_widget.toggled.connect(self.status_refresh_toggled.emit)
+        self.auto_refresh_widget.refresh_clicked.connect(self.refresh_requested.emit)
+        self.auto_refresh_widget.interval_changed.connect(self._on_refresh_rate_changed)
+        row2_layout.addWidget(self.auto_refresh_widget)
+        
         status_layout.addLayout(row2_layout)
+
         status_tab.setLayout(status_layout)
         self.tabs.addTab(status_tab, "状态显示")
 
         # 控制页
         control_tab = QWidget()
         control_layout = QHBoxLayout()
+        control_layout.setStretch(0, 1)
 
         # 左侧：关节控制面板
         self.joint_control_panel = JointControlPanel()
+        self.joint_control_panel.setMinimumHeight(600)
         self.joint_control_panel.jog_requested.connect(self.cmd_joint_jog.emit)
+        self.joint_control_panel.jog_pulse_requested.connect(self.cmd_joint_jog_pulse.emit)
         self.joint_control_panel.position_requested.connect(self.cmd_joint_position.emit)
         self.joint_control_panel.homing_requested.connect(self.cmd_homing.emit)
+        self.joint_control_panel.set_zero_requested.connect(self.cmd_set_zero_pos.emit)
+        self.joint_control_panel.set_limit_requested.connect(self.cmd_set_limit_pos.emit)
+        self.joint_control_panel.set_protection_requested.connect(self.cmd_set_protection.emit)
+        self.joint_control_panel.read_protection_requested.connect(self.cmd_read_protection.emit)
         self.joint_control_panel.emergency_stop_requested.connect(lambda: self.cmd_estop.emit(0))
-        control_layout.addWidget(self.joint_control_panel, 4)
+        control_layout.addWidget(self.joint_control_panel)
 
         # 右侧：夹爪控制
         self.gripper_control = GripperControlWidget()
         self.gripper_control.pwm_requested.connect(self.cmd_gripper_pwm.emit)
         self.gripper_control.status_requested.connect(self.cmd_read_gripper_status.emit)
-        control_layout.addWidget(self.gripper_control, 1)
+        control_layout.addWidget(self.gripper_control)
 
         control_tab.setLayout(control_layout)
         self.tabs.addTab(control_tab, "关节控制")
@@ -227,6 +327,14 @@ class MainWindow(QMainWindow):
         """)
         self.btn_disconnect.clicked.connect(self._on_disconnect_clicked)
 
+        # 校验方式选择
+        lbl_checksum = QLabel("校验方式:")
+        self.combo_checksum = QComboBox()
+        self.combo_checksum.setMinimumWidth(100)
+        self.combo_checksum.addItems(["CRC8", "固定字节(0x6B)"])
+        self.combo_checksum.setCurrentIndex(0)
+        self.combo_checksum.currentIndexChanged.connect(self._on_checksum_method_changed)
+
         layout.addWidget(lbl_port)
         layout.addWidget(self.combo_port)
         layout.addWidget(btn_refresh)
@@ -236,6 +344,9 @@ class MainWindow(QMainWindow):
         layout.addSpacing(20)
         layout.addWidget(self.btn_connect)
         layout.addWidget(self.btn_disconnect)
+        layout.addSpacing(20)
+        layout.addWidget(lbl_checksum)
+        layout.addWidget(self.combo_checksum)
         layout.addStretch()
 
         return layout
@@ -325,9 +436,36 @@ class MainWindow(QMainWindow):
         if port:
             self.connect_requested.emit(port, baudrate)
 
+    def _on_refresh_rate_changed(self, text: str):
+        """刷新频率改变"""
+        # 转换为毫秒
+        if text == "100ms":
+            interval = 100
+        elif text == "200ms":
+            interval = 200
+        elif text == "500ms":
+            interval = 500
+        elif text == "1s":
+            interval = 1000
+        elif text == "2s":
+            interval = 2000
+        else:
+            interval = 500
+        self.status_refresh_interval_changed.emit(interval)
+
     def _on_disconnect_clicked(self):
         """断开按钮点击"""
         self.disconnect_requested.emit()
+
+    def _on_checksum_method_changed(self, index: int):
+        """校验方式改变"""
+        from protocol import set_checksum_method, CHECKSUM_METHOD_CRC8, CHECKSUM_METHOD_FIXED
+        if index == 0:
+            set_checksum_method(CHECKSUM_METHOD_CRC8)
+            self.log_info("校验方式: CRC8")
+        else:
+            set_checksum_method(CHECKSUM_METHOD_FIXED)
+            self.log_info("校验方式: 固定字节(0x6B)")
 
     def _on_recording_toggled(self, checked: bool):
         """记录状态切换"""

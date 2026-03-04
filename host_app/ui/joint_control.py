@@ -4,7 +4,7 @@
 
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
                                QGroupBox, QGridLayout, QPushButton, QDoubleSpinBox,
-                               QComboBox, QSlider, QFrame)
+                               QComboBox, QSlider, QFrame, QSpinBox, QScrollArea)
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QFont
 
@@ -12,9 +12,12 @@ from PySide6.QtGui import QFont
 class JointControlWidget(QFrame):
     """单关节控制组件"""
 
-    jog_requested = Signal(int, int, float, float)  # joint_id, direction, step, speed
+    jog_requested = Signal(int, int, float, float)  # joint_id, direction, step, speed (angle mode)
+    jog_pulse_requested = Signal(int, int, int, int, int)  # joint_id, direction, pulses, speed_rpm, acc
     position_requested = Signal(int, float, float)  # joint_id, target, speed
     homing_requested = Signal(int, float)  # joint_id, speed
+    set_zero_requested = Signal(int)  # joint_id
+    set_limit_requested = Signal(int)  # joint_id
 
     def __init__(self, joint_id: int, parent=None):
         super().__init__(parent)
@@ -23,87 +26,213 @@ class JointControlWidget(QFrame):
 
     def _init_ui(self):
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
-        self.setMinimumWidth(160)
-        self.setMaximumWidth(200)
+        self.setMinimumWidth(280)
+        self.setMinimumHeight(450)
 
         # 标题
-        title = QLabel(f"J{self.joint_id}")
-        title.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
+        title = QLabel(f"关节 {self.joint_id}")
+        title.setFont(QFont("Microsoft YaHei", 12, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("padding: 8px; background-color: #3498db; color: white; border-radius: 3px;")
+
+        # === 位置控制区域 ===
+        pos_group = QGroupBox("位置控制")
+        pos_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        pos_layout = QVBoxLayout()
+        pos_layout.setSpacing(10)
 
         # 目标角度
-        lbl_target = QLabel("目标°:")
+        target_row = QHBoxLayout()
+        lbl_target = QLabel("目标角度:")
+        lbl_target.setMinimumWidth(70)
         self.spin_target = QDoubleSpinBox()
         self.spin_target.setRange(-360, 360)
         self.spin_target.setValue(0)
         self.spin_target.setDecimals(1)
-        self.spin_target.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        target_row.addWidget(lbl_target)
+        target_row.addWidget(self.spin_target)
+        target_row.addWidget(QLabel("°"))
+        pos_layout.addLayout(target_row)
 
         # 速度
-        lbl_speed = QLabel("速度°/s:")
+        speed_row = QHBoxLayout()
+        lbl_speed = QLabel("运动速度:")
+        lbl_speed.setMinimumWidth(70)
         self.spin_speed = QDoubleSpinBox()
         self.spin_speed.setRange(0.1, 50.0)
         self.spin_speed.setValue(10.0)
         self.spin_speed.setDecimals(1)
-        self.spin_speed.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        speed_row.addWidget(lbl_speed)
+        speed_row.addWidget(self.spin_speed)
+        speed_row.addWidget(QLabel("°/s"))
+        pos_layout.addLayout(speed_row)
 
-        # 位置控制按钮
-        btn_move = QPushButton("移动")
-        btn_move.setMinimumHeight(25)
+        # 移动按钮
+        btn_move = QPushButton("移动到目标位置")
+        btn_move.setMinimumHeight(30)
         btn_move.clicked.connect(self._on_move_clicked)
+        pos_layout.addWidget(btn_move)
+
+        pos_group.setLayout(pos_layout)
+
+        # === 微动控制区域 ===
+        jog_group = QGroupBox("微动控制")
+        jog_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        jog_layout = QVBoxLayout()
+        jog_layout.setSpacing(10)
+
+        # 微动模式选择
+        mode_row = QHBoxLayout()
+        lbl_mode = QLabel("微动模式:")
+        lbl_mode.setMinimumWidth(60)
+        self.combo_jog_mode = QComboBox()
+        self.combo_jog_mode.addItems(["角度模式", "脉冲模式"])
+        self.combo_jog_mode.setCurrentIndex(0)
+        self.combo_jog_mode.currentIndexChanged.connect(self._on_jog_mode_changed)
+        mode_row.addWidget(lbl_mode)
+        mode_row.addWidget(self.combo_jog_mode)
+        jog_layout.addLayout(mode_row)
+
+        # 角度模式参数
+        self.angle_params_widget = QWidget()
+        self.angle_params_widget.setMinimumHeight(80)  # 确保显示完整
+        angle_params_layout = QVBoxLayout()
+        angle_params_layout.setSpacing(8)
+
+        # 步长
+        step_row = QHBoxLayout()
+        lbl_step = QLabel("步长:")
+        lbl_step.setMinimumWidth(50)
+        self.spin_jog_step = QDoubleSpinBox()
+        self.spin_jog_step.setRange(0.01, 1000)
+        self.spin_jog_step.setValue(1.0)
+        self.spin_jog_step.setDecimals(2)
+        step_row.addWidget(lbl_step)
+        step_row.addWidget(self.spin_jog_step)
+        step_row.addWidget(QLabel("°"))
+        angle_params_layout.addLayout(step_row)
+
+        # 速度
+        jog_speed_row = QHBoxLayout()
+        lbl_jog_speed = QLabel("速度:")
+        lbl_jog_speed.setMinimumWidth(50)
+        self.spin_jog_speed = QDoubleSpinBox()
+        self.spin_jog_speed.setRange(0.1, 50.0)
+        self.spin_jog_speed.setValue(5.0)
+        self.spin_jog_speed.setDecimals(1)
+        jog_speed_row.addWidget(lbl_jog_speed)
+        jog_speed_row.addWidget(self.spin_jog_speed)
+        jog_speed_row.addWidget(QLabel("°/s"))
+        angle_params_layout.addLayout(jog_speed_row)
+
+        self.angle_params_widget.setLayout(angle_params_layout)
+        jog_layout.addWidget(self.angle_params_widget)
+
+        # 脉冲模式参数（初始隐藏）
+        self.pulse_params_widget = QWidget()
+        self.pulse_params_widget.setVisible(False)
+        pulse_params_layout = QVBoxLayout()
+        pulse_params_layout.setSpacing(5)
+
+        # 脉冲步长
+        pulse_step_row = QHBoxLayout()
+        lbl_pulse_step = QLabel("步长:")
+        lbl_pulse_step.setMinimumWidth(50)
+        self.spin_pulse_step = QSpinBox()
+        self.spin_pulse_step.setRange(1, 100000)
+        self.spin_pulse_step.setValue(100)
+        self.spin_pulse_step.setButtonSymbols(QSpinBox.NoButtons)
+        pulse_step_row.addWidget(lbl_pulse_step)
+        pulse_step_row.addWidget(QLabel("pulse"))
+        pulse_step_row.addWidget(self.spin_pulse_step)
+        pulse_params_layout.addLayout(pulse_step_row)
+
+        # 电机转速
+        pulse_speed_row = QHBoxLayout()
+        lbl_pulse_speed = QLabel("转速:")
+        lbl_pulse_speed.setMinimumWidth(50)
+        self.spin_pulse_speed = QSpinBox()
+        self.spin_pulse_speed.setRange(1, 3000)
+        self.spin_pulse_speed.setValue(100)
+        self.spin_pulse_speed.setButtonSymbols(QSpinBox.NoButtons)
+        pulse_speed_row.addWidget(lbl_pulse_speed)
+        pulse_speed_row.addWidget(QLabel("RPM"))
+        pulse_speed_row.addWidget(self.spin_pulse_speed)
+        pulse_params_layout.addLayout(pulse_speed_row)
+
+        # 加速度
+        pulse_acc_row = QHBoxLayout()
+        lbl_pulse_acc = QLabel("加速度:")
+        lbl_pulse_acc.setMinimumWidth(50)
+        self.spin_pulse_acc = QSpinBox()
+        self.spin_pulse_acc.setRange(0, 255)
+        self.spin_pulse_acc.setValue(50)
+        self.spin_pulse_acc.setButtonSymbols(QSpinBox.NoButtons)
+        pulse_acc_row.addWidget(lbl_pulse_acc)
+        pulse_acc_row.addWidget(self.spin_pulse_acc)
+        pulse_acc_row.addStretch()
+        pulse_params_layout.addLayout(pulse_acc_row)
+
+        self.pulse_params_widget.setLayout(pulse_params_layout)
+        jog_layout.addWidget(self.pulse_params_widget)
 
         # 微动按钮
-        btn_jog_pos = QPushButton("+")
-        btn_jog_pos.setFixedWidth(35)
-        btn_jog_pos.setMinimumHeight(25)
-        btn_jog_neg = QPushButton("-")
-        btn_jog_neg.setFixedWidth(35)
-        btn_jog_neg.setMinimumHeight(25)
-
-        self.combo_step = QComboBox()
-        self.combo_step.addItems(["0.1", "1", "5", "10"])
-        self.combo_step.setCurrentIndex(1)
-
+        jog_btn_layout = QHBoxLayout()
+        jog_btn_layout.setSpacing(10)
+        btn_jog_pos = QPushButton("+ 正向")
+        btn_jog_pos.setMinimumHeight(30)
+        btn_jog_neg = QPushButton("- 反向")
+        btn_jog_neg.setMinimumHeight(30)
         btn_jog_pos.clicked.connect(lambda: self._on_jog(0))
         btn_jog_neg.clicked.connect(lambda: self._on_jog(1))
+        jog_btn_layout.addWidget(btn_jog_pos)
+        jog_btn_layout.addWidget(btn_jog_neg)
+        jog_layout.addLayout(jog_btn_layout)
 
-        # 回零按钮
-        btn_home = QPushButton("回零")
-        btn_home.setMinimumHeight(25)
+        jog_group.setLayout(jog_layout)
 
-        # 布局 - 紧凑垂直排列
-        layout = QVBoxLayout()
-        layout.setSpacing(3)
-        layout.addWidget(title)
+        # === 校准区域 ===
+        calib_group = QGroupBox("校准")
+        calib_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        calib_layout = QHBoxLayout()
+        calib_layout.setSpacing(15)
 
-        # 目标角度行
-        target_layout = QHBoxLayout()
-        target_layout.addWidget(lbl_target, 1)
-        target_layout.addWidget(self.spin_target, 2)
-        layout.addLayout(target_layout)
+        btn_set_zero = QPushButton("设零位")
+        btn_set_zero.setMinimumHeight(30)
+        btn_set_zero.clicked.connect(self._on_set_zero_clicked)
 
-        # 速度行
-        speed_layout = QHBoxLayout()
-        speed_layout.addWidget(lbl_speed, 1)
-        speed_layout.addWidget(self.spin_speed, 2)
-        layout.addLayout(speed_layout)
+        btn_set_limit = QPushButton("设极限")
+        btn_set_limit.setMinimumHeight(30)
+        btn_set_limit.clicked.connect(self._on_set_limit_clicked)
 
-        layout.addWidget(btn_move)
-
-        # 微动行
-        jog_layout = QHBoxLayout()
-        jog_layout.addWidget(self.combo_step, 1)
-        jog_layout.addWidget(btn_jog_pos)
-        jog_layout.addWidget(btn_jog_neg)
-        layout.addLayout(jog_layout)
-
-        layout.addWidget(btn_home)
-        layout.addStretch()
-
-        self.setLayout(layout)
-
-        # 连接信号
+        btn_home = QPushButton("回零位")
+        btn_home.setMinimumHeight(30)
         btn_home.clicked.connect(self._on_home_clicked)
+
+        calib_layout.addWidget(btn_set_zero)
+        calib_layout.addWidget(btn_set_limit)
+        calib_layout.addWidget(btn_home)
+        calib_group.setLayout(calib_layout)
+
+        # === 主布局 ===
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(10)
+        main_layout.addWidget(title)
+        main_layout.addWidget(pos_group)
+        main_layout.addWidget(jog_group)
+        main_layout.addWidget(calib_group)
+        main_layout.addStretch()
+
+        self.setLayout(main_layout)
+
+    def _on_jog_mode_changed(self, index: int):
+        """微动模式切换"""
+        if index == 0:  # 角度模式
+            self.angle_params_widget.setVisible(True)
+            self.pulse_params_widget.setVisible(False)
+        else:  # 脉冲模式
+            self.angle_params_widget.setVisible(False)
+            self.pulse_params_widget.setVisible(True)
 
     def _on_move_clicked(self):
         target = self.spin_target.value()
@@ -111,22 +240,38 @@ class JointControlWidget(QFrame):
         self.position_requested.emit(self.joint_id, target, speed)
 
     def _on_jog(self, direction: int):
-        step_text = self.combo_step.currentText()
-        step = float(step_text)
-        speed = self.spin_speed.value()
-        self.jog_requested.emit(self.joint_id, direction, step, speed)
+        if self.combo_jog_mode.currentIndex() == 0:  # 角度模式
+            step = self.spin_jog_step.value()
+            speed = self.spin_jog_speed.value()
+            self.jog_requested.emit(self.joint_id, direction, step, speed)
+        else:  # 脉冲模式
+            step_pulses = self.spin_pulse_step.value()
+            speed_rpm = self.spin_pulse_speed.value()
+            acc = self.spin_pulse_acc.value()
+            self.jog_pulse_requested.emit(self.joint_id, direction, step_pulses, speed_rpm, acc)
 
     def _on_home_clicked(self):
         speed = self.spin_speed.value()
         self.homing_requested.emit(self.joint_id, speed)
 
+    def _on_set_zero_clicked(self):
+        self.set_zero_requested.emit(self.joint_id)
+
+    def _on_set_limit_clicked(self):
+        self.set_limit_requested.emit(self.joint_id)
+
 
 class JointControlPanel(QWidget):
     """关节控制面板"""
 
-    jog_requested = Signal(int, int, float, float)
+    jog_requested = Signal(int, int, float, float)  # angle mode
+    jog_pulse_requested = Signal(int, int, int, int, int)  # pulse mode
     position_requested = Signal(int, float, float)
     homing_requested = Signal(int, float)
+    set_zero_requested = Signal(int)
+    set_limit_requested = Signal(int)
+    set_protection_requested = Signal(bool)  # True=开启, False=关闭
+    read_protection_requested = Signal()
     emergency_stop_requested = Signal()
 
     def __init__(self, parent=None):
@@ -135,60 +280,121 @@ class JointControlPanel(QWidget):
 
     def _init_ui(self):
         main_layout = QHBoxLayout()
+        main_layout.setSpacing(15)
+
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # 滚动区域的内容 widget
+        scroll_content = QWidget()
+        scroll_layout = QHBoxLayout()
+        scroll_layout.setSpacing(15)
 
         # 2x3网格布局放置6个关节
         grid_layout = QGridLayout()
-        grid_layout.setSpacing(10)
+        grid_layout.setSpacing(15)
 
         self.joint_widgets: list[JointControlWidget] = []
         for i in range(1, 7):
             widget = JointControlWidget(i)
             widget.jog_requested.connect(self.jog_requested.emit)
+            widget.jog_pulse_requested.connect(self.jog_pulse_requested.emit)
             widget.position_requested.connect(self.position_requested.emit)
             widget.homing_requested.connect(self.homing_requested.emit)
+            widget.set_zero_requested.connect(self.set_zero_requested.emit)
+            widget.set_limit_requested.connect(self.set_limit_requested.emit)
             self.joint_widgets.append(widget)
-            # 2行3列：第0-2列放第1-3关节，第0-2列放第4-6关节
+            # 2行3列
             row = 0 if i <= 3 else 1
             col = i - 1 if i <= 3 else i - 4
             grid_layout.addWidget(widget, row, col)
 
-        main_layout.addLayout(grid_layout)
+        scroll_layout.addLayout(grid_layout)
+        scroll_content.setLayout(scroll_layout)
+        scroll_area.setWidget(scroll_content)
 
-        # 右侧全局控制按钮
+        main_layout.addWidget(scroll_area, 5)
+
+        # 右侧全局控制面板
+        global_group = QGroupBox("全局控制")
         global_layout = QVBoxLayout()
-        global_layout.setSpacing(15)
+        global_layout.setSpacing(12)
 
-        lbl_global = QLabel("全局控制")
-        lbl_global.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
-        lbl_global.setAlignment(Qt.AlignCenter)
-
+        # 回零
         btn_all_home = QPushButton("全部回零")
-        btn_all_home.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
+        btn_all_home.setFont(QFont("Microsoft YaHei", 10))
         btn_all_home.setMinimumHeight(40)
         btn_all_home.clicked.connect(lambda: self.homing_requested.emit(0, 5.0))
 
-        btn_estop = QPushButton("急停")
-        btn_estop.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
-        btn_estop.setMinimumHeight(50)
-        btn_estop.setStyleSheet("""
+        # 位置保护控制
+        prot_group = QGroupBox("位置保护")
+        prot_layout = QVBoxLayout()
+        prot_layout.setSpacing(8)
+
+        btn_prot_on = QPushButton("开启保护")
+        btn_prot_on.setMinimumHeight(30)
+        btn_prot_on.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #1e8449;
+            }
+        """)
+        btn_prot_on.clicked.connect(lambda: self.set_protection_requested.emit(True))
+
+        btn_prot_off = QPushButton("关闭保护")
+        btn_prot_off.setMinimumHeight(30)
+        btn_prot_off.setStyleSheet("""
             QPushButton {
                 background-color: #e74c3c;
                 color: white;
-                padding: 10px;
-                border-radius: 5px;
+                border-radius: 3px;
             }
             QPushButton:hover {
                 background-color: #c0392b;
             }
         """)
+        btn_prot_off.clicked.connect(lambda: self.set_protection_requested.emit(False))
+
+        btn_prot_read = QPushButton("读取状态")
+        btn_prot_read.setMinimumHeight(30)
+        btn_prot_read.clicked.connect(self.read_protection_requested.emit)
+
+        prot_layout.addWidget(btn_prot_on)
+        prot_layout.addWidget(btn_prot_off)
+        prot_layout.addWidget(btn_prot_read)
+        prot_group.setLayout(prot_layout)
+
+        # 急停
+        btn_estop = QPushButton("急停")
+        btn_estop.setFont(QFont("Microsoft YaHei", 12, QFont.Bold))
+        btn_estop.setMinimumHeight(50)
+        btn_estop.setStyleSheet("""
+            QPushButton {
+                background-color: #c0392b;
+                color: white;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #922b21;
+            }
+        """)
         btn_estop.clicked.connect(self.emergency_stop_requested.emit)
 
-        global_layout.addWidget(lbl_global)
         global_layout.addWidget(btn_all_home)
+        global_layout.addWidget(prot_group)
         global_layout.addWidget(btn_estop)
         global_layout.addStretch()
 
-        main_layout.addLayout(global_layout)
+        global_group.setLayout(global_layout)
+        main_layout.addWidget(global_group, 1)
 
         self.setLayout(main_layout)
 

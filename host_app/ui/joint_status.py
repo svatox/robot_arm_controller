@@ -69,6 +69,10 @@ class JointStatusWidget(QFrame):
             self.lbl_stall.setText("堵转: 否")
             self.lbl_stall.setStyleSheet("")
 
+    def update_angle(self, angle: float) -> None:
+        """仅更新角度"""
+        self.lbl_angle.setText(f"角度: {angle:.2f}°")
+
 
 class JointStatusPanel(QWidget):
     """关节状态面板"""

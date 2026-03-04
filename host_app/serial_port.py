@@ -85,25 +85,29 @@ class SerialPort:
                 if self.serial.in_waiting > 0:
                     data = self.serial.read(self.serial.in_waiting)
                     buffer.extend(data)
+                    print(f"RX: {data.hex()}")  # 调试：打印接收到的原始数据
                     # 尝试解析完整帧
                     while len(buffer) >= 7:
                         frame = parse_frame(bytes(buffer))
                         if frame:
                             # 完整帧解析成功
+                            print(f"Frame parsed: addr={frame.address}, func={frame.function_code}")  # 调试
                             if self._callback:
                                 self._callback(frame)
                             # 移除已解析的帧
                             buffer.clear()
                         else:
-                            # 查找帧头
+                            # 解析失败，查找帧头
                             found = False
                             for i in range(len(buffer) - 1):
                                 if buffer[i] == 0xAA and buffer[i+1] == 0x55:
                                     if i > 0:
+                                        print(f"Skipping {i} bytes before frame header")  # 调试
                                         del buffer[:i]
                                     found = True
                                     break
                             if not found:
+                                print(f"No frame header found, buffer: {buffer.hex()}")  # 调试
                                 break
                 time.sleep(0.001)
             except Exception as e:

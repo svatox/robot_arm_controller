@@ -23,6 +23,14 @@ ADDR_JOINT_6 = 0x06
 ADDR_GRIPPER = 0x07
 ADDR_SYSTEM = 0x08
 
+# 校验方式配置
+CHECKSUM_METHOD_CRC8 = 0      # CRC8校验
+CHECKSUM_METHOD_FIXED = 1     # 固定校验字节
+FIXED_CHECKSUM_BYTE = 0x6B    # 固定校验字节值
+
+# 当前使用的校验方式（可在运行时修改）
+current_checksum_method = CHECKSUM_METHOD_CRC8
+
 # 功能码 - 配置
 FUNC_SET_GEAR_RATIO = 0x01
 FUNC_SET_ZERO_POS = 0x02
@@ -42,6 +50,8 @@ FUNC_EMERGENCY_STOP = 0x2F
 # 功能码 - 状态读取
 FUNC_READ_SINGLE_STATUS = 0x41
 FUNC_READ_FULL_STATUS = 0x42
+FUNC_READ_JOINT_ANGLE = 0x43   # 读取关节角度
+FUNC_READ_PROTECTION = 0x44    # 读取位置保护状态
 FUNC_READ_GRIPPER_STATUS = 0x47
 
 # 功能码 - 异常
@@ -97,11 +107,28 @@ def crc8_calculate(data: bytes) -> int:
 
 def build_frame(address: int, function_code: int, data: bytes = b'') -> bytes:
     """构建协议帧"""
-    # 构建不含CRC和帧尾的数据
+    # 构建不含校验字节和帧尾的数据
     payload = bytes([address, function_code, len(data)]) + data
-    crc = crc8_calculate(payload)
-    # 帧头 + 数据 + CRC + 帧尾
-    return bytes([FRAME_HEADER_1, FRAME_HEADER_2]) + payload + bytes([crc, FRAME_TAIL_1, FRAME_TAIL_2])
+
+    # 根据校验方式计算校验字节
+    if current_checksum_method == CHECKSUM_METHOD_CRC8:
+        checksum = crc8_calculate(payload)
+    else:
+        checksum = FIXED_CHECKSUM_BYTE
+
+    # 帧头 + 数据 + 校验字节 + 帧尾
+    return bytes([FRAME_HEADER_1, FRAME_HEADER_2]) + payload + bytes([checksum, FRAME_TAIL_1, FRAME_TAIL_2])
+
+
+def set_checksum_method(method: int) -> None:
+    """设置校验方式"""
+    global current_checksum_method
+    current_checksum_method = method
+
+
+def get_checksum_method() -> int:
+    """获取当前校验方式"""
+    return current_checksum_method
 
 
 def build_response_frame(address: int, function_code: int, status: int,
@@ -138,6 +165,7 @@ def parse_frame(data: bytes) -> Optional[ProtocolFrame]:
 
     # 检查帧尾
     if data[start + frame_len - 2] != FRAME_TAIL_1 or data[start + frame_len - 1] != FRAME_TAIL_2:
+        print(f"Frame tail mismatch: {data[start + frame_len - 2:start + frame_len].hex()}")  # 调试
         return None
 
     # 提取数据
@@ -145,11 +173,18 @@ def parse_frame(data: bytes) -> Optional[ProtocolFrame]:
     address = payload[0]
     function_code = payload[1]
     frame_data = payload[3:3+data_len]
-    received_crc = data[start + frame_len - 3]
+    received_checksum = data[start + frame_len - 3]
 
-    # 校验CRC
-    calculated_crc = crc8_calculate(payload)
-    if received_crc != calculated_crc:
+    # 校验：根据当前配置的校验方式验证
+    if current_checksum_method == CHECKSUM_METHOD_CRC8:
+        calculated_checksum = crc8_calculate(payload)
+    else:
+        calculated_checksum = FIXED_CHECKSUM_BYTE
+
+    # 调试输出校验信息
+    print(f"Checksum: received=0x{received_checksum:02X}, calculated=0x{calculated_checksum:02X}, method={current_checksum_method}")  # 调试
+
+    if received_checksum != calculated_checksum:
         return None
 
     return ProtocolFrame(address, function_code, frame_data)
@@ -247,9 +282,17 @@ def cmd_reset_position() -> bytes:
 
 
 def cmd_joint_jog(joint_addr: int, direction: int, step: float, speed: float) -> bytes:
-    """关节微动"""
-    # direction(1B) + step(4B) + speed(2B)
-    data = bytes([direction]) + write_float(step) + write_uint16(int(speed * 10))
+    """关节微动（角度模式）"""
+    # 模式0（角度模式）: mode(1B) + direction(1B) + step(4B) + speed(2B)
+    data = bytes([0, direction]) + write_float(step) + write_uint16(int(speed * 10))
+    return build_frame(joint_addr, FUNC_JOINT_JOG, data)
+
+
+def cmd_joint_jog_by_pulse(joint_addr: int, direction: int, step_pulses: int,
+                            speed_rpm: int, acc: int = 50) -> bytes:
+    """关节微动（脉冲模式）"""
+    # 模式1（脉冲模式）: mode(1B) + direction(1B) + step(4B) + speed(2B) + acc(1B)
+    data = bytes([1, direction]) + write_int32(step_pulses) + write_uint16(speed_rpm) + bytes([acc])
     return build_frame(joint_addr, FUNC_JOINT_JOG, data)
 
 
@@ -284,9 +327,19 @@ def cmd_read_full_status() -> bytes:
     return build_frame(ADDR_SYSTEM, FUNC_READ_FULL_STATUS)
 
 
+def cmd_read_joint_angle(joint_addr: int) -> bytes:
+    """读取关节角度"""
+    return build_frame(joint_addr, FUNC_READ_JOINT_ANGLE)
+
+
 def cmd_read_gripper_status() -> bytes:
     """读取夹爪状态"""
     return build_frame(ADDR_GRIPPER, FUNC_READ_GRIPPER_STATUS)
+
+
+def cmd_read_protection() -> bytes:
+    """读取位置保护状态"""
+    return build_frame(ADDR_SYSTEM, FUNC_READ_PROTECTION)
 
 
 def cmd_motor_passthrough(joint_addr: int, motor_data: bytes) -> bytes:
@@ -346,6 +399,20 @@ def parse_limit_position(data: bytes) -> dict:
     }
 
 
+def parse_joint_angle(data: bytes) -> float:
+    """解析关节角度 (4字节)"""
+    if len(data) < 4:
+        return 0.0
+    return read_float(data, 0)
+
+
+def parse_protection_status(data: bytes) -> bool:
+    """解析位置保护状态 (1字节)"""
+    if len(data) < 1:
+        return False
+    return data[0] != 0
+
+
 # 功能码到名称映射
 FUNCTION_NAMES = {
     FUNC_SET_GEAR_RATIO: "设置减速比",
@@ -362,6 +429,8 @@ FUNCTION_NAMES = {
     FUNC_EMERGENCY_STOP: "急停",
     FUNC_READ_SINGLE_STATUS: "读单关节状态",
     FUNC_READ_FULL_STATUS: "读全量状态",
+    FUNC_READ_JOINT_ANGLE: "读关节角度",
+    FUNC_READ_PROTECTION: "读取位置保护状态",
     FUNC_READ_GRIPPER_STATUS: "读夹爪状态",
     FUNC_EXCEPTION_REPORT: "异常上报",
 }

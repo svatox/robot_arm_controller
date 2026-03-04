@@ -13,9 +13,9 @@ from protocol import (build_frame, parse_frame,
                       FUNC_SET_LIMIT_POS, FUNC_READ_LIMIT_POS, FUNC_SET_PROTECTION, FUNC_RESET_POSITION,
                       FUNC_JOINT_JOG, FUNC_HOMING, FUNC_JOINT_POSITION,
                       FUNC_GRIPPER_PWM, FUNC_EMERGENCY_STOP,
-                      FUNC_READ_SINGLE_STATUS, FUNC_READ_FULL_STATUS, FUNC_READ_GRIPPER_STATUS,
+                      FUNC_READ_SINGLE_STATUS, FUNC_READ_FULL_STATUS, FUNC_READ_JOINT_ANGLE, FUNC_READ_PROTECTION, FUNC_READ_GRIPPER_STATUS,
                       FUNC_MOTOR_PASSTHROUGH_BASE,
-                      parse_joint_status, parse_gripper_status, parse_system_status, parse_limit_position,
+                      parse_joint_status, parse_joint_angle, parse_gripper_status, parse_system_status, parse_limit_position, parse_protection_status,
                       get_function_name, get_status_text, STATUS_SUCCESS)
 from models.joint_data import JointData, GripperData, SystemData, TrajectoryRecorder
 
@@ -37,6 +37,10 @@ class RobotArmApp:
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self._poll_status)
 
+        # 定时刷新相关
+        self.auto_refresh_enabled = False
+        self.auto_refresh_interval = 500  # 默认500ms
+
         self._connect_signals()
 
     def _connect_signals(self):
@@ -52,8 +56,10 @@ class RobotArmApp:
         self.window.cmd_set_limit_pos.connect(self._send_set_limit_pos)
         self.window.cmd_read_limit_pos.connect(self._send_read_limit_pos)
         self.window.cmd_set_protection.connect(self._send_set_protection)
+        self.window.cmd_read_protection.connect(self._send_read_protection)
         self.window.cmd_reset_position.connect(self._send_reset_position)
         self.window.cmd_joint_jog.connect(self._send_joint_jog)
+        self.window.cmd_joint_jog_pulse.connect(self._send_joint_jog_pulse)
         self.window.cmd_homing.connect(self._send_homing)
         self.window.cmd_joint_position.connect(self._send_joint_position)
         self.window.cmd_gripper_pwm.connect(self._send_gripper_pwm)
@@ -70,6 +76,11 @@ class RobotArmApp:
         self.window.start_recording.connect(self._on_start_recording)
         self.window.stop_recording.connect(self._on_stop_recording)
 
+        # 定时刷新信号
+        self.window.status_refresh_toggled.connect(self._on_refresh_toggled)
+        self.window.status_refresh_interval_changed.connect(self._on_refresh_interval_changed)
+        self.window.refresh_requested.connect(self._on_refresh_requested)
+
     def run(self):
         """运行应用"""
         self.window.show()
@@ -82,6 +93,9 @@ class RobotArmApp:
             self.window.log_info(f"已连接到 {port} @ {baudrate}")
             # 启动状态轮询
             self.status_timer.start(100)  # 10Hz
+            # 如果开启了自动刷新，则启动
+            if self.auto_refresh_enabled:
+                self.status_timer.start(self.auto_refresh_interval)
         else:
             QMessageBox.warning(self.window, "连接失败", f"无法打开串口 {port}")
 
@@ -90,12 +104,45 @@ class RobotArmApp:
         self.serial.disconnect()
         self.window.set_connected(False)
         self.status_timer.stop()
+        # 停止自动刷新
+        self.auto_refresh_enabled = False
         self.window.log_info("已断开连接")
+
+    def _on_refresh_toggled(self, enabled: bool):
+        """定时刷新开关切换"""
+        self.auto_refresh_enabled = enabled
+        if self.serial.is_connected:
+            if enabled:
+                self.status_timer.start(self.auto_refresh_interval)
+                self.window.log_info(f"开启定时刷新，间隔 {self.auto_refresh_interval}ms")
+            else:
+                self.status_timer.stop()
+                self.window.log_info("关闭定时刷新")
+
+    def _on_refresh_interval_changed(self, interval: int):
+        """刷新间隔改变"""
+        self.auto_refresh_interval = interval
+        if self.serial.is_connected and self.auto_refresh_enabled:
+            self.status_timer.stop()
+            self.status_timer.start(interval)
+            self.window.log_info(f"刷新间隔改为 {interval}ms")
+
+    def _on_refresh_requested(self):
+        """立即刷新请求"""
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
+        self.refresh_all_joints()
+        self.window.log_info("立即刷新所有关节状态")
 
     def _send_frame(self, data: bytes):
         """发送帧"""
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return False
         self.serial.send(data)
         self.window.log_tx(data)
+        return True
 
     def _log_tx_with_info(self, data: bytes, cmd_name: str, params: str):
         """发送帧并记录详细信息"""
@@ -113,83 +160,166 @@ class RobotArmApp:
         if not self.serial.is_connected:
             return
 
+        # 定时刷新：每个周期读取所有6个关节状态
+        if self.auto_refresh_enabled:
+            for joint_id in range(1, 7):
+                # 发送读取关节角度命令 (使用0x43功能码)
+                frame = build_frame(joint_id, FUNC_READ_JOINT_ANGLE)
+                self.serial.send(frame)
+
         # 记录轨迹
         if self.recorder.is_recording:
             self.recorder.record(self.joints, self.gripper)
             self.window.update_record_count(len(self.recorder.records))
 
+    def refresh_all_joints(self):
+        """立即刷新所有关节状态"""
+        if not self.serial.is_connected:
+            return
+        for joint_id in range(1, 7):
+            frame = build_frame(joint_id, FUNC_READ_JOINT_ANGLE)
+            self.serial.send(frame)
+
     # 命令发送函数
     def _send_set_gear_ratio(self, joint: int, ratio: float):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         import struct
         data = build_frame(joint, FUNC_SET_GEAR_RATIO, struct.pack('<f', ratio))
         self._log_tx_with_info(data, "设置减速比", f"关节={joint if joint>0 else '全部'}, 减速比={ratio}")
 
     def _send_set_zero_pos(self, joint: int):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         data = build_frame(joint, FUNC_SET_ZERO_POS)
         self._log_tx_with_info(data, "设置零位", f"关节={joint}")
 
     def _send_save_config(self):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         data = build_frame(0x08, FUNC_SAVE_CONFIG)
         self._log_tx_with_info(data, "保存配置", "")
 
     def _send_set_limit_pos(self, joint: int):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         data = build_frame(joint, FUNC_SET_LIMIT_POS)
         self._log_tx_with_info(data, "设置极限位置", f"关节={joint}")
 
     def _send_read_limit_pos(self, joint: int):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         data = build_frame(joint, FUNC_READ_LIMIT_POS)
         self._log_tx_with_info(data, "读取极限位置", f"关节={joint}")
 
     def _send_set_protection(self, enabled: bool):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         data = build_frame(0x08, FUNC_SET_PROTECTION, bytes([1 if enabled else 0]))
         self._log_tx_with_info(data, "设置位置保护", f"开启={enabled}")
 
+    def _send_read_protection(self):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
+        # 使用 FUNC_READ_PROTECTION 读取位置保护状态
+        data = build_frame(0x08, FUNC_READ_PROTECTION)
+        self._log_tx_with_info(data, "读取位置保护状态", "")
+
     def _send_reset_position(self):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         data = build_frame(0x08, FUNC_RESET_POSITION)
         self._log_tx_with_info(data, "重置位置", "")
 
     def _send_joint_jog(self, joint: int, direction: int, step: float, speed: float):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         import struct
-        data = bytes([direction]) + struct.pack('<f', step) + struct.pack('<H', int(speed * 10))
+        # 角度模式：mode(1B) + direction(1B) + step(4B) + speed(2B)
+        data = bytes([0, direction]) + struct.pack('<f', step) + struct.pack('<H', int(speed * 10))
         frame = build_frame(joint, FUNC_JOINT_JOG, data)
         dir_str = "正向" if direction == 0 else "反向"
-        self._log_tx_with_info(frame, "关节微动", f"关节={joint}, 方向={dir_str}, 步长={step}°, 速度={speed}°/s")
+        self._log_tx_with_info(frame, "关节微动(角度)", f"关节={joint}, 方向={dir_str}, 步长={step}°, 速度={speed}°/s")
+
+    def _send_joint_jog_pulse(self, joint: int, direction: int, step_pulses: int, speed_rpm: int, acc: int):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
+        import struct
+        # 脉冲模式：mode(1B) + direction(1B) + step(4B) + speed(2B) + acc(1B)
+        data = bytes([1, direction]) + struct.pack('<i', step_pulses) + struct.pack('<H', speed_rpm) + bytes([acc])
+        frame = build_frame(joint, FUNC_JOINT_JOG, data)
+        dir_str = "正向" if direction == 0 else "反向"
+        self._log_tx_with_info(frame, "关节微动(脉冲)", f"关节={joint}, 方向={dir_str}, 步长={step_pulses}pulse, 速度={speed_rpm}RPM, 加速度={acc}")
 
     def _send_homing(self, joint: int, speed: float):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         import struct
         data = struct.pack('<f', speed)
         frame = build_frame(joint, FUNC_HOMING, data)
         self._log_tx_with_info(frame, "回零", f"关节={joint if joint > 0 else '全部'}, 速度={speed}°/s")
 
     def _send_joint_position(self, joint: int, target: float, speed: float):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         import struct
         data = struct.pack('<ff', target, speed)
         frame = build_frame(joint, FUNC_JOINT_POSITION, data)
         self._log_tx_with_info(frame, "关节位置控制", f"关节={joint}, 目标角度={target}°, 速度={speed}°/s")
 
     def _send_gripper_pwm(self, mode: int, pwm: int, time_ms: int):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         data = bytes([mode, pwm, time_ms])
         frame = build_frame(0x07, FUNC_GRIPPER_PWM, data)
         mode_str = {0: "开合", 1: "回中", 2: "急停保持"}.get(mode, f"未知({mode})")
         self._log_tx_with_info(frame, "夹爪PWM控制", f"模式={mode_str}, PWM={pwm}%, 时间={time_ms}ms")
 
     def _send_estop(self, address: int = 0):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         frame = build_frame(address, FUNC_EMERGENCY_STOP)
         self._log_tx_with_info(frame, "急停", f"地址={'全部' if address == 0 else f'关节{address}'}")
 
     def _send_read_full_status(self):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         frame = build_frame(0x08, FUNC_READ_FULL_STATUS)
         self._log_tx_with_info(frame, "读取全量状态", "")
 
     def _send_read_single_status(self, joint: int):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         frame = build_frame(joint, FUNC_READ_SINGLE_STATUS)
         self._log_tx_with_info(frame, "读取单关节状态", f"关节={joint}")
 
     def _send_read_gripper_status(self):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         frame = build_frame(0x07, FUNC_READ_GRIPPER_STATUS)
         self._log_tx_with_info(frame, "读取夹爪状态", "")
 
     def _send_motor_passthrough(self, joint: int, motor_data: bytes):
+        if not self.serial.is_connected:
+            self.window.log_error("未连接串口")
+            return
         frame = build_frame(joint, FUNC_MOTOR_PASSTHROUGH_BASE, motor_data)
         hex_data = " ".join(f"{b:02X}" for b in motor_data)
         self._log_tx_with_info(frame, "电机透传", f"关节={joint}, 数据={hex_data}")
@@ -242,6 +372,12 @@ class RobotArmApp:
                 )
                 self.window.log_info("系统状态已更新")
 
+        elif frame.function_code == FUNC_READ_PROTECTION:
+            if status == STATUS_SUCCESS:
+                protection_enabled = parse_protection_status(data)
+                status_str = "开启" if protection_enabled else "关闭"
+                self.window.log_info(f"位置保护状态: {status_str}")
+
         elif frame.function_code == FUNC_READ_GRIPPER_STATUS:
             if status == STATUS_SUCCESS:
                 grip_data = parse_gripper_status(data)
@@ -264,6 +400,19 @@ class RobotArmApp:
                     frame.address, is_set, limit_pulse
                 )
                 self.window.log_info(f"关节{frame.address}极限位置: {'已设置' if is_set else '未设置'}, 脉冲={limit_pulse}")
+
+        elif frame.function_code == FUNC_READ_JOINT_ANGLE:
+            if status == STATUS_SUCCESS and frame.address <= 6:
+                angle = parse_joint_angle(data)
+                joint = self.joints[frame.address - 1]
+                joint.current_angle = angle
+                # 更新UI中的关节状态显示
+                if frame.address <= 4:
+                    self.window.joint_status_widgets[frame.address - 1].update_angle(angle)
+                elif frame.address == 5:
+                    self.window.joint5_widget.update_angle(angle)
+                elif frame.address == 6:
+                    self.window.joint6_widget.update_angle(angle)
 
         # 通用响应处理
         if status != STATUS_SUCCESS:

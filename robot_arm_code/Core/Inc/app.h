@@ -144,6 +144,16 @@ void App_HandleReadLimitPos(const ProtocolFrame *frame, uint8_t *response, uint8
 void App_HandleSetProtection(const ProtocolFrame *frame, uint8_t *response, uint8_t *resp_len);
 
 /**
+ * @brief 处理读取位置保护状态命令
+ * @param frame 协议帧指针
+ * @param response 响应数据缓冲区
+ * @param resp_len 响应数据长度
+ *
+ * @note 功能码0x44，读取位置保护开关状态
+ */
+void App_HandleReadProtection(const ProtocolFrame *frame, uint8_t *response, uint8_t *resp_len);
+
+/**
  * @brief 处理重置位置命令
  * @param frame 协议帧指针
  * @param response 响应数据缓冲区

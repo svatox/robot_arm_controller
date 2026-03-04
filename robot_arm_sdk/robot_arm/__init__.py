@@ -159,6 +159,20 @@ class RobotArm:
         )
         raise_from_status(status)
 
+    def get_protection_status(self) -> bool:
+        """
+        读取位置保护开关状态
+
+        Returns:
+            bool: True=开启, False=关闭
+        """
+        status, data = self.commander.send_command(
+            Address.SYSTEM, FunctionCode.READ_PROTECTION
+        )
+        raise_from_status(status)
+
+        return data[0] != 0 if data else False
+
     def reset_positions(self) -> None:
         """
         重置位置

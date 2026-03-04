@@ -291,21 +291,28 @@ int FrameParser_ProcessByte(FrameParser *parser, uint8_t byte)
  */
 int FrameParser_GetFrame(FrameParser *parser, ProtocolFrame *frame)
 {
-    /* 计算CRC校验范围
+    /* 计算校验字节
      * 从buffer[2]开始（跳过帧头）
      * 长度 = 地址(1) + 功能码(1) + 长度(1) + 数据(n)
      *      = 3 + data_length
      */
     uint8_t crc_data_len = 3 + parser->frame.data_length;
-    uint8_t calculated_crc = CRC8_Calculate(&parser->buffer[2], crc_data_len);
 
-    // 比较计算的CRC和接收的CRC
-    if (calculated_crc != parser->frame.crc8) {
-        // CRC错误，返回失败
+#if CHECKSUM_METHOD == 0
+    // CRC8校验
+    uint8_t calculated_checksum = CRC8_Calculate(&parser->buffer[2], crc_data_len);
+#else
+    // 固定校验字节
+    uint8_t calculated_checksum = FIXED_CHECKSUM_BYTE;
+#endif
+
+    // 比较计算的校验字节和接收的校验字节
+    if (calculated_checksum != parser->frame.crc8) {
+        // 校验错误，返回失败
         return -1;
     }
 
-    // CRC校验通过，复制帧数据到输出
+    // 校验通过，复制帧数据到输出
     memcpy(frame, &parser->frame, sizeof(ProtocolFrame));
     return 0;
 }
@@ -356,12 +363,18 @@ int Frame_BuildResponse(uint8_t address, uint8_t function_code,
         output[idx++] = data[i];
     }
 
-    /* 计算CRC
+    /* 计算校验字节
      * 校验范围：地址 + 功能码 + 长度 + 状态 + 数据
      * 即从buffer[2]开始到status之后的所有字节
      */
-    uint8_t crc = CRC8_Calculate(&output[2], idx - 2);
-    output[idx++] = crc;
+#if CHECKSUM_METHOD == 0
+    // CRC8校验
+    uint8_t checksum = CRC8_Calculate(&output[2], idx - 2);
+#else
+    // 固定校验字节
+    uint8_t checksum = FIXED_CHECKSUM_BYTE;
+#endif
+    output[idx++] = checksum;
 
     // 添加帧尾
     output[idx++] = FRAME_TAIL_1;
