@@ -30,6 +30,7 @@ robot_arm_code/.settings/
 # Documents to ignore
 motor_driver/
 motor_desc/
+docs/
 ARCHITECTURE.md
 CLAUDE.md
 PROJECT_OVERVIEW.md
